@@ -92,11 +92,11 @@ Clone this repository to get the project directory.
 
 Download the rai binary for your platform. You will probably use it for development, and definitely use it for submission.
 
-| Operating System | Architecture | Stable Version (0.2.19) Link                                                             |
+| Operating System | Architecture | Stable Version (0.2.20) Link                                                             |
 | ---------------- | ------------ | ------------------------------------------------------------------------------- |
-| Linux            | amd64        | [URL](https://github.com/rai-project/rai/releases/download/v0.2.19/linux-amd64.tar.gz)   |
-| OSX/Darwin       | amd64        | [URL](https://github.com/rai-project/rai/releases/download/v0.2.19/darwin-amd64.tar.gz)  |
-| Windows          | amd64        | [URL](https://github.com/rai-project/rai/releases/download/v0.2.19/windows-amd64.tar.gz) |
+| Linux            | amd64        | [URL](https://github.com/rai-project/rai/releases/download/v0.2.20/linux-amd64.tar.gz)   |
+| OSX/Darwin       | amd64        | [URL](https://github.com/rai-project/rai/releases/download/v0.2.20/darwin-amd64.tar.gz)  |
+| Windows          | amd64        | [URL](https://github.com/rai-project/rai/releases/download/v0.2.20/windows-amd64.tar.gz) |
 
 You should have received a `.rai_profile` file by email.
 Put that file in `~/.rai_profile` (Linux/macOS) or `%HOME%/.rai_profile` (Windows).
@@ -407,7 +407,8 @@ The report does not need to be a particular length, but should be long enough to
 
 `new-forward.h` and `new-forward.cuh` contain skeleton implementations for CPU and GPU convolutions. You can complete the project by modifying only these two files. These functions are called from `Forward()` in `new-inl.h`.
 
-The code in `new-inl.h`, `new.cc`, and `new.cu` describes the convolution layer to MXNet. You will not need to modify these files, though you can if you want to.
+The code in `new-inl.h`, `new.cc`, and `new.cu` describes the convolution layer to MXNet. You should not modify these files. They are provided for your curiosity.
+As of rai 0.2.20, When you use the `--submit` flag, a golden version of these files from [here](https://github.com/cwpearson/2017fa_ece408_mxnet_docker/tree/master/ece408-src) is used.
 
 | File | Function | Description |
 | -- | -- | -- |
