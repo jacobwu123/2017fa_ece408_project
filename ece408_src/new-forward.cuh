@@ -61,23 +61,27 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
             }
             __syncthreads();
             for(int i = h;i < h_base + x_tile_width; i += TILE_WIDTH){
-                for(int j = w; j < w_base + x_tile_width; j += TILE_WIDTH)
-
-                    X_shared[(i-h_base)*x_tile_width + j-w_base] = x4d(n,c,i,j);
+                for(int j = w; j < w_base + x_tile_width; j += TILE_WIDTH){
+                    if(i < H && j < W)
+                        X_shared[(i-h_base)*x_tile_width + j-w_base] = x4d(n,c,i,j);
+                    else
+                        X_shared[(i-h_base)*x_tile_width + j-w_base] = 0.0;
+                }
             }
             __syncthreads();
 
             for(int p = 0; p < K; p++){
                 for(int q = 0; q < K; q++)
                 {
-                    acc += X_shared[(h0 + p)*x_tile_width + w0 + q] * W_shared[p*K + q];
+                    acc += X_shared[(w0 + p)*x_tile_width + h0 + q] * W_shared[p*K + q];
                 }
                 
             }
         }
         __syncthreads();
     }    
-    y4d(n,m,h,w) = acc; 
+    if(h < H_out && w < W_out)
+        y4d(n,m,h,w) = acc; 
 
     #undef y4d
     #undef x4d
