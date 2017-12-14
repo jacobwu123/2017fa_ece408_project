@@ -2,7 +2,6 @@
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define TILE_WIDTH 32
-#define CUDA_MAX_NUM_THREADS 1024
 #include <mxnet/base.h>
 
 namespace mxnet
@@ -46,9 +45,9 @@ __global__ void unroll_Kernel(int sampleId, int C, int H, int W, int K, float* x
        int w_out = s % W_out;
        int h_unroll = h_out * W_out + w_out;
        int w_base = c * K * K;
-       for(int p = 0; p < K; p++){
-            for(int q = 0; q < K; q++) {
-                int w_unroll = w_base + p * K + q; 
+       for(p = 0; p < K; p++)
+            for(q = 0; q < K; q++) {
+                w_unroll = w_base + p * K + q; 
                 X_unroll[h_unroll*H_out*W_out + w_unroll] = x4d(sampleId, c, h_out + p, w_out + q);
             }
         }
@@ -66,15 +65,15 @@ __global__ void multiplication(int sampleId, int M, int C, int K, int H_out, int
     const int yWidth = H_out*W_out;
     int tx = threadIdx.x;
     int ty = threadIdx.y;
-    int globalX = blockDim.x*blockIdx.x + tx;
-    int globalY = blockDim.y*blockIdx.y + ty;
+    int x = blockDim.x*blockIdx.x + tx;
+    int y = blockDim.y*blockIdx.y + ty;
 
     float acc = 0.0;
-    if(globalX < yWidth && globalY < M){
+    if(x < yWidth && y < M){
         for(int i = 0; i < filterWidth; i++ ){
-            acc += k[globalY*filterWidth + i]*X_unroll[(globalY*filterWidth + i)*yWidth + globalX]; 
+            acc += k[y*filterWidth + i]*x[(y*filterWidth + i)*yWidth + x]; 
         }
-        y[sampleId*(M * H_out * W_out) + globalY* (H_out * W_out) + globalX] = acc;
+        y[sampleId*(M * H_out * W_out) + y* (H_out * W_out) + x];
     }
 
     #undef y4d
@@ -108,10 +107,12 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int K = w.shape_[3]; // width of filter
     const int H_out = H - K + 1; // height of each output feature map
     const int W_out = W - K + 1; // width of each output feature map
-
+    const int W_grid = ceil(W_out*1.0/TILE_WIDTH);
+    const int H_grid = ceil(H_out*1.0/TILE_WIDTH);
+    const int Z = H_grid*W_grid;
     // Set the kernel dimensions
     int num_threads = C * H_out * W_out;
-    int num_blocks = ceil((num_threads * 1.0) / CUDA_MAX_NUM_THREADS);
+    int num_blocks = ceil((C * H_out * W_out) / CUDA MAX_NUM_THREADS);
     float* X_unroll;
 
     dim3 gridDim(ceil(M*1.0/TILE_WIDTH),ceil(W_out*H_out*1.0/TILE_WIDTH),1);
@@ -121,7 +122,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     for(int sampleId = 0; sampleId < B; sampleId++){
         unroll_Kernel<<<num_blocks, CUDA_MAX_NUM_THREADS,0,s>>>(sampleId, C, H, W, K, x.dptr_, X_unroll);
-        multiplication<<<gridDim,blockDim,0,s>>>(sampleId, M, C, K, H_out, W_out, w.dptr_, X_unroll, y.dptr_);
+        multiplication<<<gridDim,blockDim,0,s>>>(sampleId, M, C, K, H_out, W_out, w.dptr_,, X_unroll, y.dptr_);
     }
     cudaFree(X_unroll);
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.

@@ -2,7 +2,6 @@
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define TILE_WIDTH 32
-#define CUDA_MAX_NUM_THREADS 1024
 #include <mxnet/base.h>
 
 namespace mxnet
@@ -13,7 +12,8 @@ namespace op
 
 
 
-__global__ void unroll_Kernel(int sampleId, int C, int H, int W, int K, float* x, float* X_unroll) {
+__global__ void forward_kernel(float *y, const float *x, const float *k, const int B, 
+                                         const int M, const int C, const int H, const int W, const int K) {
 
     /*
     Modify this function to implement the forward pass described in Chapter 16.
@@ -24,7 +24,7 @@ __global__ void unroll_Kernel(int sampleId, int C, int H, int W, int K, float* x
 
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
-    const int W_unroll = H_out*W_out;
+    const int W_grid = ceil(W_out*1.0/TILE_WIDTH); // width of gird
    // (void)H_out; // silence declared but never referenced warning. remove this line when you start working
    // (void)W_out; // silence declared but never referenced warning. remove this line when you start working
     // An example use of these macros:
@@ -37,49 +37,54 @@ __global__ void unroll_Kernel(int sampleId, int C, int H, int W, int K, float* x
     /*
         Your code here!
     */
-    int t = blockIdx.x*CUDA_MAX_NUM_THREADS + threadIdx.x;
-    if(t < C*W_unroll)
-    {
-       int c = t / W_unroll;
-       int s = t % W_unroll;
-       int h_out = s / W_out;
-       int w_out = s % W_out;
-       int h_unroll = h_out * W_out + w_out;
-       int w_base = c * K * K;
-       for(int p = 0; p < K; p++){
-            for(int q = 0; q < K; q++) {
-                int w_unroll = w_base + p * K + q; 
-                X_unroll[h_unroll*H_out*W_out + w_unroll] = x4d(sampleId, c, h_out + p, w_out + q);
+    int n = blockIdx.x;
+    int m = blockIdx.y;
+    int h0 = threadIdx.x;
+    int w0 = threadIdx.y;
+
+    int h_base = blockIdx.z/W_grid * TILE_WIDTH; // elementwize starting height index
+    int w_base = blockIdx.z%W_grid * TILE_WIDTH; // elementwise starting width index
+    int h = h_base + threadIdx.y; // actual height index 
+    int w = w_base + threadIdx.x; //  actual width index
+    
+    int x_tile_width = TILE_WIDTH + K - 1; // input tile size
+    //declare shared memory
+    extern __shared__ float shmem[];
+    float* X_shared = &shmem[0];
+    float* W_shared = &shmem[x_tile_width*x_tile_width]; // starting address of shared weights
+
+    float acc = 0.0;
+    for(int c = 0; c < C; c++){ // number of feature maps
+        if(h < H_out && w < W_out){
+            if(h0 < K && w0 < K){
+                W_shared[w0*K+h0] = k4d(m,c, w0, h0);
+            }
+            __syncthreads();
+            for(int i = h;i < h_base + x_tile_width; i += TILE_WIDTH){
+                for(int j = w; j < w_base + x_tile_width; j += TILE_WIDTH)
+
+                    X_shared[(i-h_base)*x_tile_width + j-w_base] = x4d(n,c,i,j);
+            }
+            __syncthreads();
+
+            for(int p = 0; p < K; p++){
+                for(int q = 0; q < K; q++)
+                {
+                    acc += X_shared[(h0 + p)*x_tile_width + w0 + q] * W_shared[p*K + q];
+                }
+                
             }
         }
-    }
+        __syncthreads();
+    }    
+    y4d(n,m,h,w) = acc; 
 
     #undef y4d
     #undef x4d
     #undef k4d
 }
 
-__global__ void multiplication(int sampleId, int M, int C, int K, int H_out, int W_out, float*k, float*X_unroll, float*y){
-    #define y4d(i3,i2,i1,i0) y[(i3) * (M * H_out * W_out) + (i2)*(H_out * W_out) + (i1)*(W_out) + i0]
-    #define k4d(i3,i2,i1,i0) k[(i3) * (C * K * K) + (i2)*(K * K) + (i1)*(K) + i0]
-    const int filterWidth = C*K*K;
-    const int yWidth = H_out*W_out;
-    int tx = threadIdx.x;
-    int ty = threadIdx.y;
-    int globalX = blockDim.x*blockIdx.x + tx;
-    int globalY = blockDim.y*blockIdx.y + ty;
 
-    float acc = 0.0;
-    if(globalX < yWidth && globalY < M){
-        for(int i = 0; i < filterWidth; i++ ){
-            acc += k[globalY*filterWidth + i]*X_unroll[(globalY*filterWidth + i)*yWidth + globalX]; 
-        }
-        y[sampleId*(M * H_out * W_out) + globalY* (H_out * W_out) + globalX] = acc;
-    }
-
-    #undef y4d
-    #undef k4d
-}
 
 
 /* 
@@ -108,22 +113,16 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int K = w.shape_[3]; // width of filter
     const int H_out = H - K + 1; // height of each output feature map
     const int W_out = W - K + 1; // width of each output feature map
-
+    const int W_grid = ceil(W_out*1.0/TILE_WIDTH);
+    const int H_grid = ceil(H_out*1.0/TILE_WIDTH);
+    const int Z = H_grid*W_grid;
     // Set the kernel dimensions
-    int num_threads = C * H_out * W_out;
-    int num_blocks = ceil((num_threads * 1.0) / CUDA_MAX_NUM_THREADS);
-    float* X_unroll;
-
-    dim3 gridDim(ceil(M*1.0/TILE_WIDTH),ceil(W_out*H_out*1.0/TILE_WIDTH),1);
+    dim3 gridDim(B,M,Z);
     dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
+    size_t shmem_size = sizeof(float*)*((TILE_WIDTH + K - 1)*(TILE_WIDTH + K - 1) + K*K);
+    // Call the kernel
+    forward_kernel<<<gridDim, blockDim, shmem_size, s>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
 
-    cudaMalloc((void**)&X_unroll, sizeof(float)*C*K*K*H_out*W_out);
-
-    for(int sampleId = 0; sampleId < B; sampleId++){
-        unroll_Kernel<<<num_blocks, CUDA_MAX_NUM_THREADS,0,s>>>(sampleId, C, H, W, K, x.dptr_, X_unroll);
-        multiplication<<<gridDim,blockDim,0,s>>>(sampleId, M, C, K, H_out, W_out, w.dptr_, X_unroll, y.dptr_);
-    }
-    cudaFree(X_unroll);
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 
