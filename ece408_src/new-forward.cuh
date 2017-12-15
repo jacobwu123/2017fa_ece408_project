@@ -9,7 +9,7 @@ namespace mxnet
 namespace op
 {
 
-
+//__constant__ float MASK[M][C][K][K];
 
 
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, 
@@ -42,8 +42,8 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     int h0 = threadIdx.x;
     int w0 = threadIdx.y;
 
-    int h_base = blockIdx.z/W_grid * TILE_WIDTH; // elementwize starting height index
-    int w_base = blockIdx.z%W_grid * TILE_WIDTH; // elementwise starting width index
+    int h_base = (blockIdx.z/W_grid) * TILE_WIDTH; // elementwize starting height index
+    int w_base = (blockIdx.z%W_grid) * TILE_WIDTH; // elementwise starting width index
     int h = h_base + threadIdx.y; // actual height index 
     int w = w_base + threadIdx.x; //  actual width index
     
@@ -59,24 +59,27 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
             if(h0 < K && w0 < K){
                 W_shared[w0*K+h0] = k4d(m,c, w0, h0);
             }
-            __syncthreads();
+        }
+        if(h < H_out && w < W_out){
             for(int i = h;i < h_base + x_tile_width; i += TILE_WIDTH){
                 for(int j = w; j < w_base + x_tile_width; j += TILE_WIDTH){
                     if(i < H && j < W)
+                    {
                         X_shared[(i-h_base)*x_tile_width + j-w_base] = x4d(n,c,i,j);
-                    else
-                        X_shared[(i-h_base)*x_tile_width + j-w_base] = 0.0;
+                    }
                 }
             }
-            __syncthreads();
-
+        }
+        __syncthreads();
+        if(h < H_out && w < W_out)
+        {
             for(int p = 0; p < K; p++){
                 for(int q = 0; q < K; q++)
                 {
                     acc += X_shared[(w0 + p)*x_tile_width + h0 + q] * W_shared[p*K + q];
                 }
                 
-            }
+            }   
         }
         __syncthreads();
     }    
@@ -117,10 +120,12 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int K = w.shape_[3]; // width of filter
     const int H_out = H - K + 1; // height of each output feature map
     const int W_out = W - K + 1; // width of each output feature map
-    const int W_grid = ceil(W_out*1.0/TILE_WIDTH);
-    const int H_grid = ceil(H_out*1.0/TILE_WIDTH);
+    const int W_grid = ceil(W_out*1.0/(float)TILE_WIDTH);
+    const int H_grid = ceil(H_out*1.0/(float)TILE_WIDTH);
     const int Z = H_grid*W_grid;
     // Set the kernel dimensions
+  //  cudaMemcpyToSymbol(MASK,w.dptr_, K*K*M*C*sizeof(float));
+
     dim3 gridDim(B,M,Z);
     dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
     size_t shmem_size = sizeof(float*)*((TILE_WIDTH + K - 1)*(TILE_WIDTH + K - 1) + K*K);
