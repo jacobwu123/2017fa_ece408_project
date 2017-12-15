@@ -1,7 +1,7 @@
 
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
-#define TILE_WIDTH 32
+#define TILE_WIDTH 8
 #include <mxnet/base.h>
 
 namespace mxnet
@@ -120,7 +120,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int K = w.shape_[3]; // width of filter
     const int H_out = H - K + 1; // height of each output feature map
     const int W_out = W - K + 1; // width of each output feature map
-    const int W_grid = ceil(W_out*1.0/(float)TILE_WIDTH);
+    const int W_grid = ceil(W_out*1.0/(float)(TILE_WIDTH));
     const int H_grid = ceil(H_out*1.0/(float)TILE_WIDTH);
     const int Z = H_grid*W_grid;
     // Set the kernel dimensions
