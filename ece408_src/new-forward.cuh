@@ -2,6 +2,9 @@
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define TILE_WIDTH 8
+#define INPUT_FEATURE_NUM 1
+#define OUTPUT_FEATRUE_NUM 50
+#define FILTER_WIDTH 5
 #include <mxnet/base.h>
 
 namespace mxnet
@@ -9,7 +12,7 @@ namespace mxnet
 namespace op
 {
 
-//__constant__ float MASK[M][C][K][K];
+__constant__ float MASK[OUTPUT_FEATRUE_NUM][INPUT_FEATURE_NUM][FILTER_WIDTH][FILTER_WIDTH];
 
 
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, 
@@ -51,15 +54,10 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     //declare shared memory
     extern __shared__ float shmem[];
     float* X_shared = &shmem[0];
-    float* W_shared = &shmem[x_tile_width*x_tile_width]; // starting address of shared weights
+   // float* W_shared = &shmem[x_tile_width*x_tile_width]; // starting address of shared weights
 
     float acc = 0.0;
     for(int c = 0; c < C; c++){ // number of feature maps
-        if(h < H_out && w < W_out){
-            if(h0 < K && w0 < K){
-                W_shared[w0*K+h0] = k4d(m,c, w0, h0);
-            }
-        }
         if(h < H_out && w < W_out){
             for(int i = h;i < h_base + x_tile_width; i += TILE_WIDTH){
                 for(int j = w; j < w_base + x_tile_width; j += TILE_WIDTH){
@@ -76,7 +74,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
             for(int p = 0; p < K; p++){
                 for(int q = 0; q < K; q++)
                 {
-                    acc += X_shared[(w0 + p)*x_tile_width + h0 + q] * W_shared[p*K + q];
+                    acc += X_shared[(w0 + p)*x_tile_width + h0 + q] * MASK[m][c][p][q];
                 }
                 
             }   
@@ -124,11 +122,11 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int H_grid = ceil(H_out*1.0/(float)TILE_WIDTH);
     const int Z = H_grid*W_grid;
     // Set the kernel dimensions
-  //  cudaMemcpyToSymbol(MASK,w.dptr_, K*K*M*C*sizeof(float));
-
+  
+    cudaMemcpyToSymbol(MASK,w.dptr_, K*K*M*C*sizeof(float));
     dim3 gridDim(B,M,Z);
     dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
-    size_t shmem_size = sizeof(float*)*((TILE_WIDTH + K - 1)*(TILE_WIDTH + K - 1) + K*K);
+    size_t shmem_size = sizeof(float*)*((TILE_WIDTH + K - 1)*(TILE_WIDTH + K - 1));
     // Call the kernel
     forward_kernel<<<gridDim, blockDim, shmem_size, s>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
 
