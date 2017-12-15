@@ -1,7 +1,7 @@
 
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
-#define TILE_WIDTH 8
+#define TILE_WIDTH 16
 #define INPUT_FEATURE_NUM 1
 #define OUTPUT_FEATRUE_NUM 50
 #define FILTER_WIDTH 5
@@ -35,7 +35,6 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     // y4d(0,0,0,0) = a
     #define y4d(i3,i2,i1,i0) y[(i3) * (M * H_out * W_out) + (i2)*(H_out * W_out) + (i1)*(W_out) + i0]
     #define x4d(i3,i2,i1,i0) x[(i3) * (C * H * W) + (i2)*(H * W) + (i1)*(W) + i0]
-    #define k4d(i3,i2,i1,i0) k[(i3) * (C * K * K) + (i2)*(K * K) + (i1)*(K) + i0]
 
     /*
         Your code here!
@@ -53,18 +52,12 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     int x_tile_width = TILE_WIDTH + K - 1; // input tile size
     //declare shared memory
     extern __shared__ float shmem[];
-    float* X_shared = &shmem[0];
-   // float* W_shared = &shmem[x_tile_width*x_tile_width]; // starting address of shared weights
-
     float acc = 0.0;
-    for(int c = 0; c < C; c++){ // number of feature maps
-        if(h < H_out && w < W_out){
+    for(int c = 0; c< C; c++){
+        if((h < H) && (w < W)){
             for(int i = h;i < h_base + x_tile_width; i += TILE_WIDTH){
                 for(int j = w; j < w_base + x_tile_width; j += TILE_WIDTH){
-                    if(i < H && j < W)
-                    {
-                        X_shared[(i-h_base)*x_tile_width + j-w_base] = x4d(n,c,i,j);
-                    }
+                    shmem[(i-h_base)*x_tile_width + j-w_base] = x4d(n,c,i,j);
                 }
             }
         }
@@ -74,19 +67,18 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
             for(int p = 0; p < K; p++){
                 for(int q = 0; q < K; q++)
                 {
-                    acc += X_shared[(w0 + p)*x_tile_width + h0 + q] * MASK[m][c][p][q];
+                    acc += shmem[(w0 + p)*x_tile_width + h0 + q] * MASK[m][c][p][q];
                 }
                 
             }   
         }
         __syncthreads();
-    }    
-    if(h < H_out && w < W_out)
-        y4d(n,m,h,w) = acc; 
+    }
+    if((h < H_out) && (w < W_out))
+        {y4d(n,m,h,w) = acc;}
 
     #undef y4d
     #undef x4d
-    #undef k4d
 }
 
 
