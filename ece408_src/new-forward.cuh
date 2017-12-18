@@ -30,7 +30,6 @@ __global__ void unroll_Kernel(int sampleId, int C, int H, int W, int K, float* x
     // An example use of these macros:
     // float a = y4d(0,0,0,0)
     // y4d(0,0,0,0) = a
-    #define y4d(i3,i2,i1,i0) y[(i3) * (M * H_out * W_out) + (i2)*(H_out * W_out) + (i1)*(W_out) + i0]
     #define x4d(i3,i2,i1,i0) x[(i3) * (C * H * W) + (i2)*(H * W) + (i1)*(W) + i0]
     #define k4d(i3,i2,i1,i0) k[(i3) * (C * K * K) + (i2)*(K * K) + (i1)*(K) + i0]
 
@@ -40,8 +39,8 @@ __global__ void unroll_Kernel(int sampleId, int C, int H, int W, int K, float* x
     int t = blockIdx.x*CUDA_MAX_NUM_THREADS + threadIdx.x;
     if(t < C*W_unroll)
     {
-       int c = t / W_unroll;
-       int s = t % W_unroll;
+       int c = t / W_unroll; //y
+       int s = t % W_unroll; // x
        int h_out = s / W_out;
        int w_out = s % W_out;
        int h_unroll = h_out * W_out + w_out;
@@ -49,12 +48,11 @@ __global__ void unroll_Kernel(int sampleId, int C, int H, int W, int K, float* x
        for(int p = 0; p < K; p++){
             for(int q = 0; q < K; q++) {
                 int w_unroll = w_base + p * K + q; 
-                X_unroll[h_unroll*H_out*W_out + w_unroll] = x4d(sampleId, c, h_out + p, w_out + q);
+                X_unroll[w_unroll*W_unroll + h_unroll] = x4d(sampleId, c, h_out + p, w_out + q);
             }
         }
     }
 
-    #undef y4d
     #undef x4d
     #undef k4d
 }
@@ -72,7 +70,7 @@ __global__ void multiplication(int sampleId, int M, int C, int K, int H_out, int
     float acc = 0.0;
     if(globalX < yWidth && globalY < M){
         for(int i = 0; i < filterWidth; i++ ){
-            acc += k[globalY*filterWidth + i]*X_unroll[(globalY*filterWidth + i)*yWidth + globalX]; 
+            acc += k[globalY*filterWidth + i]*X_unroll[i*yWidth + globalX]; 
         }
         y[sampleId*(M * H_out * W_out) + globalY* (H_out * W_out) + globalX] = acc;
     }
@@ -114,7 +112,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     int num_blocks = ceil((num_threads * 1.0) / CUDA_MAX_NUM_THREADS);
     float* X_unroll;
 
-    dim3 gridDim(ceil(M*1.0/TILE_WIDTH),ceil(W_out*H_out*1.0/TILE_WIDTH),1);
+    dim3 gridDim(ceil(H_out*W_out*1.0/TILE_WIDTH),ceil(M*1.0/TILE_WIDTH),1);
     dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
 
     cudaMalloc((void**)&X_unroll, sizeof(float)*C*K*K*H_out*W_out);
