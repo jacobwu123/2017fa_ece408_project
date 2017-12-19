@@ -59,8 +59,7 @@ __global__ void unroll_Kernel(int sampleId, int C, int H, int W, int K, float* x
 }
 
 __global__ void multiplication(int sampleId, int M, int C, int K, int H_out, int W_out, float*k, float*X_unroll, float*y){
-    #define y4d(i3,i2,i1,i0) y[(i3) * (M * H_out * W_out) + (i2)*(H_out * W_out) + (i1)*(W_out) + i0]
-    #define k4d(i3,i2,i1,i0) k[(i3) * (C * K * K) + (i2)*(K * K) + (i1)*(K) + i0]
+
     const int filterWidth = C*K*K;
     const int yWidth = H_out*W_out;
     __shared__ float shareK[TILE_WIDTH][TILE_WIDTH];
@@ -94,8 +93,6 @@ __global__ void multiplication(int sampleId, int M, int C, int K, int H_out, int
     if(Row < M && Col < yWidth)
         y[sampleId*(M*H_out*W_out) + Row*yWidth + Col] = Cvalue;
 
-    #undef y4d
-    #undef k4d
 }
 
 
