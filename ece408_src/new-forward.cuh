@@ -1,8 +1,9 @@
 
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
-#define TILE_WIDTH 32
+#define TILE_WIDTH 16
 #define CUDA_MAX_NUM_THREADS 1024
+#define SHARE_MEM_BLOCK 512
 #include <mxnet/base.h>
 
 namespace mxnet
@@ -62,18 +63,36 @@ __global__ void multiplication(int sampleId, int M, int C, int K, int H_out, int
     #define k4d(i3,i2,i1,i0) k[(i3) * (C * K * K) + (i2)*(K * K) + (i1)*(K) + i0]
     const int filterWidth = C*K*K;
     const int yWidth = H_out*W_out;
+    __shared__ float shareK[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float shareX[TILE_WIDTH][TILE_WIDTH];
     int tx = threadIdx.x;
     int ty = threadIdx.y;
-    int globalX = blockDim.x*blockIdx.x + tx;
-    int globalY = blockDim.y*blockIdx.y + ty;
+    int by = blockIdx.y;
+    int bx = blockIdx.x;
 
-    float acc = 0.0;
-    if(globalX < yWidth && globalY < M){
-        for(int i = 0; i < filterWidth; i++ ){
-            acc += k[globalY*filterWidth + i]*X_unroll[i*yWidth + globalX]; 
+    int Row = by*TILE_WIDTH + ty;
+    int Col = bx*TILE_WIDTH + tx;
+    float Cvalue = 0;
+    for(int ph = 0; ph < ceil(filterWidth/(float)TILE_WIDTH);ph++){
+        if((Row < M) && (ph*TILE_WIDTH + tx < filterWidth))
+            shareK[ty][tx] = k[Row*filterWidth + ph*TILE_WIDTH + tx];
+        else
+            shareK[ty][tx] = 0;
+        if((Col < yWidth) && ( ph*TILE_WIDTH + ty < filterWidth))
+            shareX[ty][tx] = X_unroll[(ph*TILE_WIDTH + ty)*yWidth + Col];
+        else
+            shareX[ty][tx] = 0;
+        __syncthreads();
+        if(Row < M && Col < yWidth){
+            for(int i = 0; i < TILE_WIDTH; i++)
+                Cvalue += shareK[ty][i]*shareX[i][tx];
         }
-        y[sampleId*(M * H_out * W_out) + globalY* (H_out * W_out) + globalX] = acc;
+        __syncthreads();
     }
+
+    
+    if(Row < M && Col < yWidth)
+        y[sampleId*(M*H_out*W_out) + Row*yWidth + Col] = Cvalue;
 
     #undef y4d
     #undef k4d
@@ -94,7 +113,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
   //  CHECK_EQ(0, 1) << "Reach line 62!";
 
     // You'll probably need to launch kernels against the right stream to keep MXNet happy
-    cudaStream_t s = y.stream_->stream_;
+    //cudaStream_t s = y.stream_->stream_;
 
     // Extract the tensor dimensions into B,M,C,H,W,K
     // ...
@@ -106,21 +125,25 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int K = w.shape_[3]; // width of filter
     const int H_out = H - K + 1; // height of each output feature map
     const int W_out = W - K + 1; // width of each output feature map
-
-    // Set the kernel dimensions
+    cudaStream_t s[32];
+    for(int i = 0; i < 32; i++){
+        cudaStreamCreate(&s[i]);
+    }
+    //Set the kernel dimensions
     int num_threads = C * H_out * W_out;
     int num_blocks = ceil((num_threads * 1.0) / CUDA_MAX_NUM_THREADS);
     float* X_unroll;
 
-    dim3 gridDim(ceil(H_out*W_out*1.0/TILE_WIDTH),ceil(M*1.0/TILE_WIDTH),1);
+    dim3 gridDim(ceil(C*H_out*W_out*1.0/TILE_WIDTH),ceil(M*1.0/TILE_WIDTH),1);
     dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
 
     cudaMalloc((void**)&X_unroll, sizeof(float)*C*K*K*H_out*W_out);
 
     for(int sampleId = 0; sampleId < B; sampleId++){
-        unroll_Kernel<<<num_blocks, CUDA_MAX_NUM_THREADS,0,s>>>(sampleId, C, H, W, K, x.dptr_, X_unroll);
-        multiplication<<<gridDim,blockDim,0,s>>>(sampleId, M, C, K, H_out, W_out, w.dptr_, X_unroll, y.dptr_);
+        unroll_Kernel<<<num_blocks, CUDA_MAX_NUM_THREADS,0,s[B%32]>>>(sampleId, C, H, W, K, x.dptr_, X_unroll);
+        multiplication<<<gridDim,blockDim,0,s[B%32]>>>(sampleId, M, C, K, H_out, W_out, w.dptr_, X_unroll, y.dptr_);
     }
+
     cudaFree(X_unroll);
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
