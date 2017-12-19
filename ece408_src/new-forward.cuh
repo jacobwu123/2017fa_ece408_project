@@ -6,6 +6,9 @@
 #define SHARE_MEM_BLOCK 512
 #include <mxnet/base.h>
 
+
+__constant__ float MASK[50][25];
+
 namespace mxnet
 {
 namespace op
@@ -62,7 +65,7 @@ __global__ void multiplication(int sampleId, int M, int C, int K, int H_out, int
 
     const int filterWidth = C*K*K;
     const int yWidth = H_out*W_out;
-    __shared__ float shareK[TILE_WIDTH][TILE_WIDTH];
+//    __shared__ float shareK[TILE_WIDTH][TILE_WIDTH];
     __shared__ float shareX[TILE_WIDTH][TILE_WIDTH];
     int tx = threadIdx.x;
     int ty = threadIdx.y;
@@ -73,18 +76,20 @@ __global__ void multiplication(int sampleId, int M, int C, int K, int H_out, int
     int Col = bx*TILE_WIDTH + tx;
     float Cvalue = 0;
     for(int ph = 0; ph < ceil(filterWidth/(float)TILE_WIDTH);ph++){
-        if((Row < M) && (ph*TILE_WIDTH + tx < filterWidth))
-            shareK[ty][tx] = k[Row*filterWidth + ph*TILE_WIDTH + tx];
-        else
-            shareK[ty][tx] = 0;
+ //       if((Row < M) && (ph*TILE_WIDTH + tx < filterWidth))
+  //          shareK[ty][tx] = k[Row*filterWidth + ph*TILE_WIDTH + tx];
+    //    else
+      //      shareK[ty][tx] = 0;
         if((Col < yWidth) && ( ph*TILE_WIDTH + ty < filterWidth))
             shareX[ty][tx] = X_unroll[(ph*TILE_WIDTH + ty)*yWidth + Col];
         else
             shareX[ty][tx] = 0;
         __syncthreads();
         if(Row < M && Col < yWidth){
-            for(int i = 0; i < TILE_WIDTH; i++)
-                Cvalue += shareK[ty][i]*shareX[i][tx];
+            for(int i = 0; i < TILE_WIDTH; i++){
+                if(ph*TILE_WIDTH+i < filterWidth)
+                    Cvalue += MASK[Row][ph*TILE_WIDTH+i]*shareX[i][tx];
+            }
         }
         __syncthreads();
     }
@@ -130,6 +135,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     int num_threads = C * H_out * W_out;
     int num_blocks = ceil((num_threads * 1.0) / CUDA_MAX_NUM_THREADS);
     float* X_unroll;
+    cudaMemcpyToSymbol(MASK,w.dptr_, K*K*M*C*sizeof(float));
 
     dim3 gridDim(ceil(C*H_out*W_out*1.0/TILE_WIDTH),ceil(M*1.0/TILE_WIDTH),1);
     dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
